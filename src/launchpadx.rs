@@ -2,7 +2,7 @@
 // https://fael-downloads-prod.focusrite.com/customer/prod/s3fs-public/downloads/Launchpad%20X%20-%20Programmers%20Reference%20Manual.pdf
 
 extern crate midir;
-use crate::primitives::{Cell, Grid, Led};
+use crate::types::{Cell, Grid, Led, PadEvent, PadEventType};
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use std::{
     collections::HashMap,
@@ -12,23 +12,119 @@ use std::{
 const CELL_ROWS: usize = 9;
 const CELL_COLUMNS: usize = 9;
 
-const MIDI_INPUTS: [&'static str; 4] = [
+type IONames = [&'static str; 2];
+const MIDI_INPUTS: IONames = [
     "LPX MIDI",
     "MIDIIN2 (LPX MIDI)",
-    "MIDIIN2 (Launch Control XL)",
-    "Launch Control XL",
+    //  "MIDIIN2 (Launch Control XL)",
+    //   "Launch Control XL",
 ];
-const MIDI_OUTPUTS: [&'static str; 4] = [
+const MIDI_OUTPUTS: IONames = [
     "LPX MIDI",
     "MIDIOUT2 (LPX MIDI)",
-    "MIDIOUT2 (Launch Control XL)",
-    "Launch Control XL",
+    //   "MIDIOUT2 (Launch Control XL)",
+    //   "Launch Control XL",
 ];
 
 const LAUNCHPAD_INPUT: &'static str = "LAUNCHY_LaunchpadX_Input";
 const LAUNCHPAD_OUTPUT: &'static str = "LAUNCHY_LaunchpadX_Output";
 const LAUNCHPAD_OUTPUT_SEND: &'static str = "LAUNCHY_LaunchpadX_Output_SEND";
 const LAUNCHPAD_READ_INPUT: &'static str = "LAUNCHY_LaunchpadX_Input_READ";
+
+pub struct LaunchpadX {
+    conn_out: MidiOutputConnection,
+    #[allow(dead_code)]
+    conn_in: MidiInputConnection<()>,
+    pending_cells: Grid,
+    active_cells: Grid,
+    msg_outbox: Vec<PadEvent>,
+    msg_state: HashMap<u8, u8>,
+    msg_receiver: Receiver<MidiMsg>,
+}
+impl LaunchpadX {
+    /// Creates a new connection to the first Launchpad.
+    pub fn new() -> Self {
+        let (conn_in, msg_receiver) = input_connection();
+        let mut launch_pad = Self {
+            conn_out: output_connection(),
+            conn_in,
+            pending_cells: Grid::new(CELL_ROWS, CELL_COLUMNS),
+            active_cells: Grid::new(CELL_ROWS, CELL_COLUMNS),
+            msg_outbox: vec![],
+            msg_state: HashMap::new(),
+            msg_receiver,
+        };
+
+        launch_pad.set_programmer_mode(true);
+
+        // Reset the LEDs to be blank
+        for x in 0..launch_pad.width() {
+            for y in 0..launch_pad.height() {
+                launch_pad.set_led(x, y, Led::Off);
+            }
+        }
+        launch_pad.flush();
+
+        launch_pad
+    }
+
+    /// Returns the width of the pad.
+    pub fn width(&self) -> usize {
+        CELL_ROWS
+    }
+
+    /// Returns the height of the pad.
+    pub fn height(&self) -> usize {
+        CELL_COLUMNS
+    }
+
+    /// Sets the launchpad to programmer mode.
+    fn set_programmer_mode(&mut self, is_programmer_mode: bool) {
+        // Set header
+        let mut msg = vec![240, 0, 32, 41, 2, 12, 0];
+
+        // Set code
+        let code = match is_programmer_mode {
+            true => 127,
+            false => 0,
+        };
+        msg.push(code);
+
+        // Finish
+        msg.push(247);
+
+        // Send
+        self.conn_out.send(&msg).unwrap();
+    }
+
+    /// Queues up setting of the given LED.
+    pub fn set_led(&mut self, x: usize, y: usize, state: Led) {
+        self.pending_cells.set(x, y, state);
+    }
+
+    /// Flushes the colors to the Launchpad.
+    pub fn flush(&mut self) {
+        let msg = cells_to_sysex(&mut self.pending_cells, &mut self.active_cells);
+        self.conn_out.send(&msg.to_bytes()).unwrap();
+    }
+
+    /// Polls to see if there's any event that should be handled.
+    pub fn poll(&mut self) -> Option<PadEvent> {
+        for msg in self.msg_receiver.try_iter() {
+            let note = msg.note;
+            let value = msg.velocity;
+            let prev_value = self.msg_state.insert(note, value);
+
+            self.msg_outbox.push(map_event(note, value, prev_value));
+        }
+
+        if self.msg_outbox.is_empty() {
+            None
+        } else {
+            Some(self.msg_outbox.remove(0))
+        }
+    }
+}
 
 /// A struct used for communicating midi messages.
 #[allow(dead_code)]
@@ -52,7 +148,10 @@ fn input_connection() -> (MidiInputConnection<()>, Receiver<MidiMsg>) {
                 port = Some(p);
             }
 
-            println!("{:?}", name);
+            #[cfg(feature = "debug")]
+            {
+                println!("{:?}", name);
+            }
         }
 
         match port {
@@ -112,102 +211,6 @@ fn output_connection() -> MidiOutputConnection {
         .unwrap()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PadEvent {
-    pub x: usize,
-    pub y: usize,
-    pub event: PadEventType,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PadEventType {
-    Pressed { velocity: u8 },
-    Held { velocity: u8 },
-    Released,
-}
-
-pub struct LaunchpadX {
-    conn_out: MidiOutputConnection,
-    #[allow(dead_code)]
-    conn_in: MidiInputConnection<()>,
-    is_dirty: bool,
-    pending_cells: Grid,
-    active_cells: Grid,
-    msg_outbox: Vec<PadEvent>,
-    msg_state: HashMap<u8, u8>,
-    msg_receiver: Receiver<MidiMsg>,
-}
-impl LaunchpadX {
-    /// Creates a new connection to the first Launchpad.
-    pub fn new() -> Self {
-        let (conn_in, msg_receiver) = input_connection();
-        let mut launch_pad = Self {
-            conn_out: output_connection(),
-            conn_in,
-            is_dirty: true,
-            pending_cells: Grid::new(CELL_ROWS, CELL_COLUMNS),
-            active_cells: Grid::new(CELL_ROWS, CELL_COLUMNS),
-            msg_outbox: vec![],
-            msg_state: HashMap::new(),
-            msg_receiver,
-        };
-
-        launch_pad.set_programmer_mode(true);
-        launch_pad
-    }
-
-    /// Sets the launchpad to programmer mode.
-    fn set_programmer_mode(&mut self, is_programmer_mode: bool) {
-        // Set header
-        let mut msg = vec![240, 0, 32, 41, 2, 12, 0];
-
-        // Set code
-        let code = match is_programmer_mode {
-            true => 127,
-            false => 0,
-        };
-        msg.push(code);
-
-        // Finish
-        msg.push(247);
-
-        // Send
-        self.conn_out.send(&msg).unwrap();
-    }
-
-    /// Queues up setting of the given LED.
-    pub fn set_led(&mut self, x: usize, y: usize, state: Led) {
-        self.pending_cells.set(x, y, state);
-        self.is_dirty = true;
-    }
-
-    /// Flushes the colors to the Launchpad.
-    pub fn flush(&mut self) {
-        if self.is_dirty {
-            self.is_dirty = false;
-            let msg = cells_to_sysex(&mut self.pending_cells, &mut self.active_cells);
-            self.conn_out.send(&msg.to_bytes()).unwrap();
-        }
-    }
-
-    /// Polls to see if there's any event that should be handled.
-    pub fn poll(&mut self) -> Option<PadEvent> {
-        for msg in self.msg_receiver.try_iter() {
-            let note = msg.note;
-            let value = msg.velocity;
-            let prev_value = self.msg_state.insert(note, value);
-
-            self.msg_outbox.push(map_event(note, value, prev_value));
-        }
-
-        if self.msg_outbox.is_empty() {
-            None
-        } else {
-            Some(self.msg_outbox.remove(0))
-        }
-    }
-}
-
 fn map_event(note: u8, value: u8, prev_value: Option<u8>) -> PadEvent {
     let event = if value == 0 {
         PadEventType::Released
@@ -245,7 +248,6 @@ impl SysexMsg {
 fn cells_to_sysex(pending_cells: &Grid, active_cells: &mut Grid) -> SysexMsg {
     // Build up message with header
     let mut msg = vec![240, 0, 32, 41, 2, 12, 3];
-
     for cell in active_cells.iter_mut() {
         let pending = pending_cells.get(cell.x, cell.y);
         if *cell != pending {

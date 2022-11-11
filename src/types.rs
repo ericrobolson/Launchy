@@ -1,20 +1,37 @@
 use crate::math::{self, index_2d_to_1d};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Cell {
+/// An event generated from a pad.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PadEvent {
     pub x: usize,
     pub y: usize,
-    pub led: Led,
+    pub event: PadEventType,
 }
 
+/// The type of event that occured.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PadEventType {
+    Pressed { velocity: u8 },
+    Held { velocity: u8 },
+    Released,
+}
+
+/// The state of a LED.
 #[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
 pub enum Led {
     Off,
     Rgb((u8, u8, u8)),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Cell {
+    pub x: usize,
+    pub y: usize,
+    pub led: Led,
+}
+
 #[derive(Debug, Clone, PartialEq)]
-pub struct Grid {
+pub(crate) struct Grid {
     width: usize,
     height: usize,
     values: Vec<Cell>,
@@ -42,25 +59,16 @@ impl Grid {
         }
     }
 
-    /// Returns the number of items in the grid.
-    pub fn count(&self) -> usize {
-        self.values.len()
-    }
-
     /// Sets the given value.
     pub fn set(&mut self, x: usize, y: usize, led: Led) {
         let idx = index_2d_to_1d(x, y, self.width, self.height);
         self.values[idx].led = led;
     }
 
+    /// Returns the item at the given cell.
     pub fn get(&self, x: usize, y: usize) -> Cell {
         let idx = index_2d_to_1d(x, y, self.width, self.height);
         self.values[idx]
-    }
-
-    /// Returns the values in the grid.
-    pub fn iter(&self) -> impl Iterator<Item = &Cell> {
-        self.values.iter()
     }
 
     /// Returns the values in the grid.
