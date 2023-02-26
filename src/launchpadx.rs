@@ -12,18 +12,21 @@ use std::{
 const CELL_ROWS: usize = 9;
 const CELL_COLUMNS: usize = 9;
 
-type IONames = [&'static str; 2];
+/// The max value that a LED can read.
+const MAX_LED_VALUE: u8 = 127;
+
+type IONames = [&'static str; 3];
 const MIDI_INPUTS: IONames = [
     "LPX MIDI",
     "MIDIIN2 (LPX MIDI)",
-    //  "MIDIIN2 (Launch Control XL)",
-    //   "Launch Control XL",
+    "Launchpad X LPX MIDI Out", //  "MIDIIN2 (Launch Control XL)",
+                                //   "Launch Control XL",
 ];
 const MIDI_OUTPUTS: IONames = [
     "LPX MIDI",
     "MIDIOUT2 (LPX MIDI)",
-    //   "MIDIOUT2 (Launch Control XL)",
-    //   "Launch Control XL",
+    "Launchpad X LPX MIDI In", //   "MIDIOUT2 (Launch Control XL)",
+                               //   "Launch Control XL",
 ];
 
 const LAUNCHPAD_INPUT: &'static str = "LAUNCHY_LaunchpadX_Input";
@@ -147,16 +150,21 @@ fn input_connection() -> (MidiInputConnection<()>, Receiver<MidiMsg>) {
             if MIDI_INPUTS.contains(&name.as_str()) {
                 port = Some(p);
             }
-
-            #[cfg(feature = "debug")]
-            {
-                println!("{:?}", name);
-            }
         }
 
         match port {
             Some(p) => p,
-            None => todo!("Fetch input port"),
+            None => {
+                println!("Unable to set midi port! Existing ports:");
+
+                for p in midi_in.ports() {
+                    let name = midi_in.port_name(&p).unwrap();
+
+                    println!("- {:?}", name);
+                }
+
+                todo!("Fetch input port")
+            }
         }
     };
 
@@ -202,7 +210,15 @@ fn output_connection() -> MidiOutputConnection {
 
         match port {
             Some(p) => p,
-            None => todo!("Fetch output port"),
+            None => {
+                println!("Unable to set midi ports. Existing ports:");
+                for p in midi_out.ports() {
+                    let name = midi_out.port_name(&p).unwrap();
+                    println!("- {name}");
+                }
+
+                todo!("Fetch output port")
+            }
         }
     };
 
@@ -276,11 +292,23 @@ fn write_cell_lighting_msg(cell: &Cell, msg: &mut Vec<u8>) {
     match cell.led {
         Led::Off => msg.push(0),
         Led::Rgb((r, g, b)) => {
-            msg.push(r);
-            msg.push(g);
-            msg.push(b);
+            msg.push(cast_u8_to_color(r));
+            msg.push(cast_u8_to_color(g));
+            msg.push(cast_u8_to_color(b));
         }
     }
+}
+
+/// Casts an 255 value u8 to a 127 value u8.
+/// Launchpad only supports 127 values for RGB.
+fn cast_u8_to_color(value: u8) -> u8 {
+    let half = value / 2;
+    let clamped_value = if half >= MAX_LED_VALUE {
+        MAX_LED_VALUE
+    } else {
+        half
+    };
+    clamped_value as u8
 }
 
 fn led_index(cell: &Cell) -> u8 {
