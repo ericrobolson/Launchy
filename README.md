@@ -24,5 +24,5 @@ See `examples/poll.rs` and `examples/set_led.rs` for code you can run.
 
 
 # Compatibility
-- This has only been verified on Windows. Mac and Linux should be doable, but I haven't tested them out. Open an issue if one of these platforms ends up being supported and I will update the README.
+- This has only been verified on Windows and M1 Macs. Linux and other platforms should be doable, but I haven't tested them out. Open an issue if one of these platforms ends up being supported and I will update the README.
 - Only Launchpad X has been implemented as that is the only one I own.
